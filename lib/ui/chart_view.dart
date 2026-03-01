@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'dart:math';
 import '../models/candle_model.dart';
 import '../models/trade_state.dart';
 
 class ChartView extends StatefulWidget {
+  final String timeframe;
   final List<CandleModel> candles;
   final TradeState tradeState;
   final double? liveBid;
@@ -11,6 +13,7 @@ class ChartView extends StatefulWidget {
 
   const ChartView({
     Key? key,
+    required this.timeframe,
     required this.candles,
     required this.tradeState,
     this.liveBid,
@@ -26,6 +29,23 @@ class _ChartViewState extends State<ChartView> {
   double _scale = 1.0;
   double _baseScale = 1.0;
   double _dragPan = 0.0;
+  
+  Timer? _refreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Refresh every second for the countdown timer
+    _refreshTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
   
   @override
   Widget build(BuildContext context) {
@@ -55,6 +75,7 @@ class _ChartViewState extends State<ChartView> {
       child: CustomPaint(
         size: Size.infinite, // Expand to take available space
         painter: _CandlePainter(
+          timeframe: widget.timeframe,
           candles: widget.candles,
           tradeState: widget.tradeState,
           liveBid: widget.liveBid,
@@ -68,6 +89,7 @@ class _ChartViewState extends State<ChartView> {
 }
 
 class _CandlePainter extends CustomPainter {
+  final String timeframe;
   final List<CandleModel> candles;
   final TradeState tradeState;
   final double? liveBid;
@@ -76,6 +98,7 @@ class _CandlePainter extends CustomPainter {
   final double dragPan;
 
   _CandlePainter({
+    required this.timeframe,
     required this.candles,
     required this.tradeState,
     this.liveBid,
@@ -290,7 +313,46 @@ class _CandlePainter extends CustomPainter {
     }
 
     // ----------------------------------------------------
-    // 3. Draw Post-Trade Markers
+    // 3. Draw Countdown Timer
+    // ----------------------------------------------------
+    if (candles.isNotEmpty) {
+      // Calculate remaining time
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final int timeframeMs = (timeframe == '1m' ? 1 : 15) * 60 * 1000;
+      final lastCandleStart = candles.last.timestamp;
+      final nextCandleStart = lastCandleStart + timeframeMs;
+      final remainingMs = nextCandleStart - now;
+
+      if (remainingMs > 0) {
+        final remainingSec = (remainingMs / 1000).ceil();
+        final minutes = (remainingSec / 60).floor();
+        final seconds = remainingSec % 60;
+        final timerText = "${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}";
+
+        final double currentPrice = liveAsk ?? liveBid ?? candles.last.close;
+        final double timerY = getY(currentPrice);
+
+        if (timerY >= 0 && timerY <= height) {
+          final tp = TextPainter(
+            text: TextSpan(
+              text: timerText,
+              style: const TextStyle(color: Colors.black87, fontSize: 10, fontWeight: FontWeight.bold),
+            ),
+            textDirection: TextDirection.ltr,
+          )..layout();
+
+          // Draw a small background box for readability
+          canvas.drawRect(
+            Rect.fromLTWH(width + 2, timerY + 10, axisWidth - 4, 14),
+            Paint()..color = Colors.blue.withOpacity(0.1),
+          );
+          tp.paint(canvas, Offset(width + 5, timerY + 11));
+        }
+      }
+    }
+
+    // ----------------------------------------------------
+    // 4. Draw Post-Trade Markers
     // ----------------------------------------------------
     for (var marker in tradeState.historyMarkers) {
       // Find the candle index for this timestamp

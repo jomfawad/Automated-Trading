@@ -202,10 +202,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   children: [
                     _isLoading1m 
                         ? const Center(child: CircularProgressIndicator())
-                        : ChartView(candles: _candles1m, tradeState: _engine1m.state, liveBid: _liveBid, liveAsk: _liveAsk),
+                        : ChartView(timeframe: '1m', candles: _candles1m, tradeState: _engine1m.state, liveBid: _liveBid, liveAsk: _liveAsk),
                     _isLoading15m 
                         ? const Center(child: CircularProgressIndicator())
-                        : ChartView(candles: _candles15m, tradeState: _engine15m.state, liveBid: _liveBid, liveAsk: _liveAsk),
+                        : ChartView(timeframe: '15m', candles: _candles15m, tradeState: _engine15m.state, liveBid: _liveBid, liveAsk: _liveAsk),
                   ],
                 ),
               ),
