@@ -169,6 +169,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   bool _isGlobalBotActive = false;
 
+  TradingEngine get _currentEngine => _tabController.index == 0 ? _engine1m : _engine15m;
+
   @override
   Widget build(BuildContext context) {
     if (_connectionError != null) {
