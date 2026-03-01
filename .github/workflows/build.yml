@@ -30,7 +30,7 @@ jobs:
         run: flutter build apk --release --no-tree-shake-icons
         
       - name: Upload APK Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: crypto-bot-apk
           path: build/app/outputs/flutter-apk/app-release.apk
