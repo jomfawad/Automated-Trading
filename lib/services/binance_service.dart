@@ -14,20 +14,43 @@ class BinanceService {
   Stream<Map<String, dynamic>> get ws15mStream => _ws15mController.stream;
   Stream<Map<String, dynamic>> get bookStream => _bookController.stream;
 
+  final List<String> _endpoints = [
+    'https://api.binance.com',
+    'https://api1.binance.com',
+    'https://api2.binance.com',
+    'https://api3.binance.com',
+  ];
+
   Future<List<CandleModel>> fetchHistoricalCandles(String timeframe) async {
-    final url = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=$timeframe&limit=100';
-    try {
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
-        return data.map((e) => CandleModel.fromJson(e)).toList();
-      } else {
-        throw Exception('Failed to load historical candles');
+    Object? lastError;
+    
+    for (final base in _endpoints) {
+      final url = '$base/api/v3/klines?symbol=BTCUSDT&interval=$timeframe&limit=100';
+      try {
+        final response = await http.get(
+          Uri.parse(url),
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          },
+        ).timeout(const Duration(seconds: 10));
+
+        if (response.statusCode == 200) {
+          final List<dynamic> data = jsonDecode(response.body);
+          return data.map((e) => CandleModel.fromJson(e)).toList();
+        } else {
+          lastError = 'Binance API Error: ${response.statusCode}';
+          continue; // Try next endpoint
+        }
+      } on TimeoutException {
+        lastError = 'Connection timed out on $base.';
+        continue;
+      } catch (e) {
+        lastError = e;
+        continue;
       }
-    } catch (e) {
-      print('Error fetching historical candles: $e');
-      return [];
     }
+    
+    throw Exception(lastError ?? 'Failed to connect to any Binance endpoint. Check your internet.');
   }
 
   void connectWebSocket() {

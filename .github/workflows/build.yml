@@ -1,36 +1,49 @@
-name: Build Android APK
+name: Build and Deploy Bot
 on:
   push:
     branches:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      
       - name: Setup Java
         uses: actions/setup-java@v3
         with:
           distribution: 'zulu'
           java-version: '17'
-          
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.3'
           channel: 'stable'
-          
-      - name: Install dependencies
-        run: flutter pub get
-        
-      - name: Build APK
-        run: flutter build apk --release --no-tree-shake-icons
-        
-      - name: Upload APK Artifact
+      - run: flutter pub get
+      - run: flutter build apk --release --no-tree-shake-icons
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: crypto-bot-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+
+  build-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.3'
+          channel: 'stable'
+      - run: flutter pub get
+      - run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./build/web

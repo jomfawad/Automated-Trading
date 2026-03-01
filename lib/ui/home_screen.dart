@@ -29,8 +29,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   double? _liveAsk;
   double? _liveBid;
 
-  // Global switch state, drives both engines
-  bool _isGlobalBotActive = false;
+  String? _connectionError;
 
   @override
   void initState() {
@@ -43,14 +42,22 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   Future<void> _initApp() async {
+    setState(() {
+      _isLoading1m = true;
+      _isLoading15m = true;
+      _connectionError = null;
+    });
+
     await _engine1m.init();
     await _engine15m.init();
     
     // Load historical candles concurrently
-    Future.wait([
-      _apiService.fetchHistoricalCandles('1m'),
-      _apiService.fetchHistoricalCandles('15m')
-    ]).then((results) {
+    try {
+      final results = await Future.wait([
+        _apiService.fetchHistoricalCandles('1m'),
+        _apiService.fetchHistoricalCandles('15m')
+      ]);
+
       if (mounted) {
         setState(() {
           _candles1m = results[0];
@@ -59,7 +66,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           _isLoading15m = false;
         });
       }
-    });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _connectionError = e.toString().replaceAll('Exception: ', '');
+          _isLoading1m = false;
+          _isLoading15m = false;
+        });
+      }
+      return; // Stop initialization if history fails
+    }
 
     // Listen for UI updates from engines
     _engine1m.onUpdate.listen((_) { if (mounted) setState(() {}); });
@@ -151,10 +167,49 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     super.dispose();
   }
 
-  TradingEngine get _currentEngine => _tabController.index == 0 ? _engine1m : _engine15m;
+  bool _isGlobalBotActive = false;
 
   @override
   Widget build(BuildContext context) {
+    if (_connectionError != null) {
+      return Scaffold(
+        backgroundColor: Colors.white,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.cloud_off, size: 64, color: Colors.redAccent),
+                const SizedBox(height: 16),
+                Text(
+                  'Connection Error',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _connectionError!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.grey),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  onPressed: _initApp,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('RETRY CONNECTION'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blueAccent,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: Colors.white, // TradingView Light theme
       appBar: AppBar(
