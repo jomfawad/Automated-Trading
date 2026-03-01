@@ -1,12 +1,23 @@
-void processLiveTick() {
-  print('Bot is active.');
+void processLiveTick(Tick tick) {
+  // Log bot status
+  print('Bot active: $isActive');
 
-  // Assuming existing code to check conditions
-  if (conditionsMet()) {
-    print('Conditions met.');
+  // Log entry condition checks
+  bool entryConditionMet = checkEntryConditions(tick);
+  print('Entry condition met: $entryConditionMet');
 
-    // Assuming existing code to trigger trade
-    triggerTrade();
-    print('Trade has been triggered.');
+  // Log bid/ask data availability
+  if (bidDataAvailable() && askDataAvailable()) {
+    print('Bid/Ask data available.');
+  } else {
+    print('Bid/Ask data not available.');
+  }
+
+  // Attempt to execute trade
+  if (entryConditionMet) {
+    executeTrade(tick);
+    print('Trade executed: $tick');
+  } else {
+    print('No trade executed.');
   }
 }
