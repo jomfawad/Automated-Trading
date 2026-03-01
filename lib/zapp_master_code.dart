@@ -409,6 +409,8 @@ class _ChartViewState extends State<ChartView> {
   double _scale = 1.0;
   double _baseScale = 1.0;
   double _dragPan = 0.0;
+  double _yScale = 1.0;
+  double _baseYScale = 1.0;
   int _lastCandleCount = 0;
   double? _minPrice;
   double? _maxPrice;
@@ -467,12 +469,18 @@ class _ChartViewState extends State<ChartView> {
             _maxPrice = null;
           });
         },
-        onScaleStart: (details) => _baseScale = _scale,
+        onScaleStart: (details) {
+          _baseScale = _scale;
+          _baseYScale = _yScale;
+        },
         onScaleUpdate: (details) {
           setState(() {
             final double oldScale = _scale;
-            _scale = (_baseScale * details.scale).clamp(0.1, 20.0);
-            if (details.scale != 1.0 && details.localFocalPoint.dx < width) {
+            if (details.scale != 1.0) {
+              _scale = (_baseScale * details.horizontalScale).clamp(0.1, 20.0);
+              _yScale = (_baseYScale * details.verticalScale).clamp(0.1, 20.0);
+            }
+            if (details.scale != 1.0 && _scale != oldScale) {
                 final double focalX = details.localFocalPoint.dx;
                 final double oldStep = (8.0 * oldScale) * 1.25;
                 final double newStep = (8.0 * _scale) * 1.25;
@@ -494,6 +502,7 @@ class _ChartViewState extends State<ChartView> {
             liveBid: widget.liveBid,
             liveAsk: widget.liveAsk,
             scale: _scale,
+            yScale: _yScale,
             dragPan: _dragPan,
             onPriceBoundsCalculated: (min, max) {
               if (_minPrice == null || _maxPrice == null) {
@@ -523,6 +532,7 @@ class _CandlePainter extends CustomPainter {
   final double? liveBid;
   final double? liveAsk;
   final double scale;
+  final double yScale;
   final double dragPan;
   final Function(double min, double max) onPriceBoundsCalculated;
   final double? forcedMinPrice;
@@ -530,7 +540,7 @@ class _CandlePainter extends CustomPainter {
 
   _CandlePainter({
     required this.timeframe, required this.candles, required this.tradeState,
-    this.liveBid, this.liveAsk, required this.scale, required this.dragPan,
+    this.liveBid, this.liveAsk, required this.scale, required this.yScale, required this.dragPan,
     required this.onPriceBoundsCalculated, this.forcedMinPrice, this.forcedMaxPrice,
   });
 
@@ -571,9 +581,14 @@ class _CandlePainter extends CustomPainter {
     naturalMax += padding; naturalMin -= padding;
     WidgetsBinding.instance.addPostFrameCallback((_) => onPriceBoundsCalculated(naturalMin, naturalMax));
 
-    final double maxPrice = forcedMaxPrice ?? naturalMax, minPrice = forcedMinPrice ?? naturalMin, priceRange = maxPrice - minPrice;
+    final double maxPrice = forcedMaxPrice ?? naturalMax, minPrice = forcedMinPrice ?? naturalMin;
+    final double centerPrice = (maxPrice + minPrice) / 2;
+    final double halfRange = ((maxPrice - minPrice) / 2) / yScale;
+    final double adjustedMax = centerPrice + halfRange, adjustedMin = centerPrice - halfRange;
+    final double priceRange = adjustedMax - adjustedMin;
+
     canvas.drawRect(Rect.fromLTWH(width, 0, axisWidth, height), Paint()..color = Colors.grey.withOpacity(0.1));
-    double getY(double price) => priceRange <= 0 ? height / 2 : height - ((price - minPrice) / priceRange) * height;
+    double getY(double price) => priceRange <= 0 ? height / 2 : height - ((price - adjustedMin) / priceRange) * height;
 
     for (int i = startIdx; i < endIdx; i++) {
       final c = candles[i];
@@ -630,7 +645,7 @@ class _CandlePainter extends CustomPainter {
     }
   }
 
-  @override bool shouldRepaint(covariant _CandlePainter old) => old.scale != scale || old.dragPan != dragPan || old.candles.length != candles.length || old.liveBid != liveBid || old.liveAsk != liveAsk || old.tradeState.status != tradeState.status || old.tradeState.historyMarkers.length != tradeState.historyMarkers.length || old.forcedMinPrice != forcedMinPrice || old.forcedMaxPrice != forcedMaxPrice;
+  @override bool shouldRepaint(covariant _CandlePainter old) => old.scale != scale || old.yScale != yScale || old.dragPan != dragPan || old.candles.length != candles.length || old.liveBid != liveBid || old.liveAsk != liveAsk || old.tradeState.status != tradeState.status || old.tradeState.historyMarkers.length != tradeState.historyMarkers.length || old.forcedMinPrice != forcedMinPrice || old.forcedMaxPrice != forcedMaxPrice;
 }
 
 // ==========================================
@@ -728,7 +743,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           _level('ENTRY', engine.state.activeEntry ?? (engine.state.setupEntryHigh != null ? 'Setup' : null), Colors.blue),
           _level('TP', engine.state.activeTP ?? '1:2', Colors.green),
         ])),
-        Expanded(child: TabBarView(controller: _tabController, children: [
+        Expanded(child: TabBarView(controller: _tabController, physics: const NeverScrollableScrollPhysics(), children: [
           _l1m ? const Center(child: CircularProgressIndicator()) : ChartView(timeframe: '1m', candles: _c1m, tradeState: _e1m.state, liveBid: _liveBid, liveAsk: _liveAsk),
           _l15m ? const Center(child: CircularProgressIndicator()) : ChartView(timeframe: '15m', candles: _c15m, tradeState: _e15m.state, liveBid: _liveBid, liveAsk: _liveAsk),
         ])),

@@ -256,6 +256,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               Expanded(
                 child: TabBarView(
                   controller: _tabController,
+                  physics: const NeverScrollableScrollPhysics(),
                   children: [
                     _isLoading1m 
                         ? const Center(child: CircularProgressIndicator())

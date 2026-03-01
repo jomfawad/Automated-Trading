@@ -30,6 +30,10 @@ class _ChartViewState extends State<ChartView> {
   double _baseScale = 1.0;
   double _dragPan = 0.0;
   
+  // Independent Y scaling
+  double _yScale = 1.0;
+  double _baseYScale = 1.0;
+  
   // Stabilization and Scaling
   int _lastCandleCount = 0;
   double? _minPrice;
@@ -99,41 +103,35 @@ class _ChartViewState extends State<ChartView> {
         },
         onScaleStart: (details) {
           _baseScale = _scale;
+          _baseYScale = _yScale;
         },
         onScaleUpdate: (details) {
           setState(() {
             final double oldScale = _scale;
-            // Pinch to zoom
-            _scale = (_baseScale * details.scale).clamp(0.1, 20.0);
-
-            // FOCAL POINT ZOOMING:
-            // The coordinate under the focal point shouldn't move.
+            
+            // TradingView-style: Independent X and Y zooming
+            // If horizontalScale or verticalScale is 1.0, it means that component hasn't changed.
+            // We use the pointer components to update our internal scales.
             if (details.scale != 1.0) {
+              _scale = (_baseScale * details.horizontalScale).clamp(0.1, 20.0);
+              _yScale = (_baseYScale * details.verticalScale).clamp(0.1, 20.0);
+            }
+
+            // FOCAL POINT ZOOMING (Time Axis):
+            if (details.scale != 1.0 && _scale != oldScale) {
               final double focalX = details.localFocalPoint.dx;
               if (focalX < width) {
                 final double baseCandleWidth = 8.0;
                 final double oldStep = baseCandleWidth * oldScale * 1.25;
                 final double newStep = baseCandleWidth * _scale * 1.25;
-                
-                // Content Width parameters (sync with painter logic)
                 final double rightMargin = width * 0.25;
                 final double oldMaxScroll = (widget.candles.length * oldStep) - width + rightMargin;
-                final double oldScrollX = oldMaxScroll + _dragPan;
-                
-                // Calculate world index under focal point before scaling
-                final double worldX = (focalX + oldScrollX) / oldStep;
-                
-                // Calculate new max scroll with new scale
+                final double worldX = (focalX + (oldMaxScroll + _dragPan)) / oldStep;
                 final double newMaxScroll = (widget.candles.length * newStep) - width + rightMargin;
-                
-                // newScrollX = (worldX * newStep) - focalX
-                // Since newScrollX = newMaxScroll + newDragPan
-                // newDragPan = (worldX * newStep) - focalX - newMaxScroll
                 _dragPan = (worldX * newStep) - focalX - newMaxScroll;
               }
             }
             
-            // Drag to pan (dx > 0 means dragging right, which should move view to the past)
             _dragPan -= details.focalPointDelta.dx; 
           });
         },
@@ -146,6 +144,7 @@ class _ChartViewState extends State<ChartView> {
             liveBid: widget.liveBid,
             liveAsk: widget.liveAsk,
             scale: _scale,
+            yScale: _yScale,
             dragPan: _dragPan,
             // Vertical Stabilization
             onPriceBoundsCalculated: (min, max) {
@@ -179,6 +178,7 @@ class _CandlePainter extends CustomPainter {
   final double? liveBid;
   final double? liveAsk;
   final double scale;
+  final double yScale;
   final double dragPan;
   
   // Vertical Stabilization
@@ -193,6 +193,7 @@ class _CandlePainter extends CustomPainter {
     this.liveBid,
     this.liveAsk,
     required this.scale,
+    required this.yScale,
     required this.dragPan,
     required this.onPriceBoundsCalculated,
     this.forcedMinPrice,
@@ -287,7 +288,14 @@ class _CandlePainter extends CustomPainter {
 
     final double maxPrice = forcedMaxPrice ?? naturalMax;
     final double minPrice = forcedMinPrice ?? naturalMin;
-    final double priceRange = maxPrice - minPrice;
+    
+    // Apply yScale adjustment to the range to zoom vertically
+    final double centerPrice = (maxPrice + minPrice) / 2;
+    final double halfRange = ((maxPrice - minPrice) / 2) / yScale;
+    
+    final double adjustedMax = centerPrice + halfRange;
+    final double adjustedMin = centerPrice - halfRange;
+    final double priceRange = adjustedMax - adjustedMin;
 
     // Paint Axis Background
     final axisPaint = Paint()..color = Colors.grey.withOpacity(0.1);
@@ -296,7 +304,7 @@ class _CandlePainter extends CustomPainter {
     // Y coordinate helper
     double getY(double price) {
       if (priceRange <= 0) return height / 2;
-      return height - ((price - minPrice) / priceRange) * height;
+      return height - ((price - adjustedMin) / priceRange) * height;
     }
 
     // ----------------------------------------------------
@@ -516,6 +524,7 @@ class _CandlePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _CandlePainter oldDelegate) {
     return oldDelegate.scale != scale || 
+           oldDelegate.yScale != yScale ||
            oldDelegate.dragPan != dragPan ||
            oldDelegate.candles.length != candles.length ||
            oldDelegate.liveBid != liveBid ||
