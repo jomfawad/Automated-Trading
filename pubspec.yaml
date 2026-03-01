@@ -39,6 +39,9 @@ dependencies:
   http: ^1.2.2
   shared_preferences: ^2.2.3
   interactive_chart: ^0.3.6
+  flutter_background_service: ^5.0.10
+  flutter_local_notifications: ^17.2.2
+  device_info_plus: ^10.1.2
 
 dev_dependencies:
   flutter_test:

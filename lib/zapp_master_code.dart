@@ -5,6 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'dart:ui';
+import 'dart:io';
 
 // ==========================================
 // MODELS
@@ -106,6 +110,32 @@ class TradeState {
     isLong = true;
     postTradeEntry = null;
   }
+
+  Map<String, dynamic> toJson() => {
+    'status': status.index,
+    'setupEntryHigh': setupEntryHigh,
+    'setupEntryLow': setupEntryLow,
+    'setupSL': setupSL,
+    'setupTPHigh': setupTPHigh,
+    'setupTPLow': setupTPLow,
+    'activeEntry': activeEntry,
+    'activeSL': activeSL,
+    'activeTP': activeTP,
+    'isLong': isLong,
+  };
+
+  void fromJson(Map<String, dynamic> json) {
+    status = TradeStatus.values[json['status'] ?? 0];
+    setupEntryHigh = json['setupEntryHigh'];
+    setupEntryLow = json['setupEntryLow'];
+    setupSL = json['setupSL'];
+    setupTPHigh = json['setupTPHigh'];
+    setupTPLow = json['setupTPLow'];
+    activeEntry = json['activeEntry'];
+    activeSL = json['activeSL'];
+    activeTP = json['activeTP'];
+    isLong = json['isLong'] ?? true;
+  }
 }
 
 // ==========================================
@@ -114,11 +144,9 @@ class TradeState {
 
 class BinanceService {
   WebSocketChannel? _channel;
-  final StreamController<Map<String, dynamic>> _ws1mController = StreamController<Map<String, dynamic>>.broadcast();
   final StreamController<Map<String, dynamic>> _ws15mController = StreamController<Map<String, dynamic>>.broadcast();
   final StreamController<Map<String, dynamic>> _bookController = StreamController<Map<String, dynamic>>.broadcast();
 
-  Stream<Map<String, dynamic>> get ws1mStream => _ws1mController.stream;
   Stream<Map<String, dynamic>> get ws15mStream => _ws15mController.stream;
   Stream<Map<String, dynamic>> get bookStream => _bookController.stream;
 
@@ -161,15 +189,13 @@ class BinanceService {
 
   void connectWebSocket() {
     disconnectWebSocket();
-    final wsUrl = Uri.parse('wss://stream.binance.com:9443/stream?streams=btcusdt@kline_1m/btcusdt@kline_15m/btcusdt@bookTicker');
+    final wsUrl = Uri.parse('wss://stream.binance.com:9443/stream?streams=btcusdt@kline_15m/btcusdt@bookTicker');
     _channel = WebSocketChannel.connect(wsUrl);
 
     _channel!.stream.listen(
       (message) {
         final data = jsonDecode(message);
-        if (data['stream'] == 'btcusdt@kline_1m') {
-           _ws1mController.add(data['data']);
-        } else if (data['stream'] == 'btcusdt@kline_15m') {
+        if (data['stream'] == 'btcusdt@kline_15m') {
            _ws15mController.add(data['data']);
         } else if (data['stream'] == 'btcusdt@bookTicker') {
            _bookController.add(data['data']);
@@ -219,11 +245,25 @@ class StorageService {
     history.add(trade);
     await prefs.setString(_historyKey, jsonEncode(history));
   }
+
+  Future<void> saveActiveState(TradeState state) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('active_state_$timeframe', jsonEncode(state.toJson()));
+  }
+
+  Future<void> loadActiveState(TradeState state) async {
+    final prefs = await SharedPreferences.getInstance();
+    final String? data = prefs.getString('active_state_$timeframe');
+    if (data != null) {
+      state.fromJson(jsonDecode(data));
+    }
+  }
   
   Future<void> clearAll() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_capitalKey);
     await prefs.remove(_historyKey);
+    await prefs.remove('active_state_$timeframe');
   }
 }
 
@@ -248,6 +288,7 @@ class TradingEngine {
 
   Future<void> init() async {
     state.currentCapital = await storageService.loadCapital();
+    await storageService.loadActiveState(state);
     final history = await storageService.loadTradeHistory();
     state.historyMarkers = history.map((e) {
       TradeResult result = TradeResult.none;
@@ -330,6 +371,7 @@ class TradingEngine {
           if (currentPrice >= threshold && state.activeSL! < state.activeEntry!) {
              double distEntryToOriginalSL = state.activeEntry! - state.setupSL!;
              state.activeSL = state.activeEntry! + (distEntryToOriginalSL * 0.10);
+             storageService.saveActiveState(state); // Update SL in persistence
              _notify();
           }
         }
@@ -344,6 +386,7 @@ class TradingEngine {
           if (currentPrice <= threshold && state.activeSL! > state.activeEntry!) {
              double distOriginalSLToEntry = state.setupSL! - state.activeEntry!;
              state.activeSL = state.activeEntry! - (distOriginalSLToEntry * 0.10);
+             storageService.saveActiveState(state); // Update SL in persistence
              _notify();
           }
         }
@@ -375,10 +418,14 @@ class TradingEngine {
       'capitalAfter': state.currentCapital,
     });
     state.clearTrade();
+    storageService.saveActiveState(state); // Clear from persistence
     _notify();
   }
 
-  void _notify() => _updateController.add(null);
+  void _notify() {
+    storageService.saveActiveState(state); // Always sync on update
+    _updateController.add(null);
+  }
 }
 
 // ==========================================
@@ -406,7 +453,7 @@ class ChartView extends StatefulWidget {
 }
 
 class _ChartViewState extends State<ChartView> {
-  double _scale = 1.0;
+  double _scale = -1.0; // Negative indicates unitialized for stabilization
   double _baseScale = 1.0;
   double _dragPan = 0.0;
   double _yScale = 1.0;
@@ -415,6 +462,7 @@ class _ChartViewState extends State<ChartView> {
   double? _minPrice;
   double? _maxPrice;
   Timer? _refreshTimer;
+  Offset? _lastFocalPoint;
 
   @override
   void initState() {
@@ -428,7 +476,7 @@ class _ChartViewState extends State<ChartView> {
   @override
   void didUpdateWidget(ChartView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.candles.length > _lastCandleCount) {
+    if (widget.candles.length > _lastCandleCount && _scale > 0) {
       final double step = (8.0 * _scale) * 1.25;
       _dragPan -= ((widget.candles.length - _lastCandleCount) * step);
       _lastCandleCount = widget.candles.length;
@@ -459,38 +507,63 @@ class _ChartViewState extends State<ChartView> {
     return LayoutBuilder(builder: (context, constraints) {
       final double axisWidth = 60.0;
       final double width = constraints.maxWidth - axisWidth;
+
+      // Handle Initial Stabilization (Target ~50 candles visible)
+      if (_scale < 0 && widget.candles.isNotEmpty) {
+        const double targetVisibleCandles = 50.0;
+        const double baseCandleWidth = 8.0;
+        const double baseStep = baseCandleWidth * 1.25;
+        _scale = (width / (targetVisibleCandles * baseStep)).clamp(0.5, 5.0);
+        _dragPan = 0.0; // Start at the right (most recent)
+      }
       
       return GestureDetector(
         onDoubleTap: () {
           setState(() {
-            _scale = 1.0;
+            _scale = -1.0; // Reset to stabilized view
             _dragPan = 0.0;
             _minPrice = null;
             _maxPrice = null;
+            _yScale = 1.0;
           });
         },
         onScaleStart: (details) {
           _baseScale = _scale;
           _baseYScale = _yScale;
+          _lastFocalPoint = details.localFocalPoint;
         },
         onScaleUpdate: (details) {
           setState(() {
             final double oldScale = _scale;
+            final double focalX = details.localFocalPoint.dx;
+            
+            // X-Axis Zoom (Time)
             if (details.scale != 1.0) {
               _scale = (_baseScale * details.horizontalScale).clamp(0.1, 20.0);
               _yScale = (_baseYScale * details.verticalScale).clamp(0.1, 20.0);
-            }
-            if (details.scale != 1.0 && _scale != oldScale) {
-                final double focalX = details.localFocalPoint.dx;
+              
+              if (_scale != oldScale) {
                 final double oldStep = (8.0 * oldScale) * 1.25;
                 final double newStep = (8.0 * _scale) * 1.25;
                 final double rightMargin = width * 0.25;
                 final double oldMaxScroll = (widget.candles.length * oldStep) - width + rightMargin;
+                
+                // Calculate "world distance" of focal point from current scroll end
                 final double worldX = (focalX + (oldMaxScroll + _dragPan)) / oldStep;
                 final double newMaxScroll = (widget.candles.length * newStep) - width + rightMargin;
+                
+                // Adjust dragPan so worldX stays at focalX
                 _dragPan = (worldX * newStep) - focalX - newMaxScroll;
+              }
             }
-            _dragPan -= details.focalPointDelta.dx; 
+
+            // Panning (only if not zooming heavily, to avoid glitchiness)
+            if (details.scale > 0.9 && details.scale < 1.1) {
+              if (_lastFocalPoint != null) {
+                _dragPan -= (details.localFocalPoint.dx - _lastFocalPoint!.dx);
+              }
+            }
+            _lastFocalPoint = details.localFocalPoint;
           });
         },
         child: CustomPaint(
@@ -657,46 +730,42 @@ class HomeScreen extends StatefulWidget {
   @override _HomeScreenState createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen> {
   final BinanceService _apiService = BinanceService();
-  late TabController _tabController;
-  final TradingEngine _e1m = TradingEngine(timeframe: '1m'), _e15m = TradingEngine(timeframe: '15m');
-  List<CandleModel> _c1m = [], _c15m = [];
-  bool _l1m = true, _l15m = true, _isGlobalBotActive = false;
+  final TradingEngine _engine = TradingEngine(timeframe: '15m');
+  List<CandleModel> _candles = [];
+  bool _isLoading = true, _isBotActive = false;
   double? _liveAsk, _liveBid;
   String? _connectionError;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this)..addListener(() => setState(() {}));
     _initApp();
   }
 
   Future<void> _initApp() async {
-    setState(() { _l1m = true; _l15m = true; _connectionError = null; });
-    await _e1m.init(); await _e15m.init();
+    setState(() { _isLoading = true; _connectionError = null; });
+    await _engine.init();
     try {
-      final results = await Future.wait([_apiService.fetchHistoricalCandles('1m'), _apiService.fetchHistoricalCandles('15m')]);
-      setState(() { _c1m = results[0]; _c15m = results[1]; _l1m = false; _l15m = false; });
+      final results = await _apiService.fetchHistoricalCandles('15m');
+      setState(() { _candles = results; _isLoading = false; });
     } catch (e) {
-      setState(() { _connectionError = e.toString().replaceAll('Exception: ', ''); _l1m = false; _l15m = false; });
+      setState(() { _connectionError = e.toString().replaceAll('Exception: ', ''); _isLoading = false; });
       return;
     }
-    _e1m.onUpdate.listen((_) => setState(() {})); _e15m.onUpdate.listen((_) => setState(() {}));
+    _engine.onUpdate.listen((_) => setState(() {}));
     _apiService.connectWebSocket();
     _apiService.bookStream.listen((data) {
       setState(() {
         _liveBid = double.tryParse(data['b'] ?? ''); _liveAsk = double.tryParse(data['a'] ?? '');
         if (_liveBid != null && _liveAsk != null) {
            final mid = (_liveBid! + _liveAsk!) / 2;
-           if (_c1m.isNotEmpty) { final l = _c1m.last; _c1m[_c1m.length-1] = CandleModel(timestamp: l.timestamp, open: l.open, high: max(l.high, mid), low: min(l.low, mid), close: mid, volume: l.volume); }
-           if (_c15m.isNotEmpty) { final l = _c15m.last; _c15m[_c15m.length-1] = CandleModel(timestamp: l.timestamp, open: l.open, high: max(l.high, mid), low: min(l.low, mid), close: mid, volume: l.volume); }
+           if (_candles.isNotEmpty) { final l = _candles.last; _candles[_candles.length-1] = CandleModel(timestamp: l.timestamp, open: l.open, high: max(l.high, mid), low: min(l.low, mid), close: mid, volume: l.volume); }
         }
       });
     });
-    _apiService.ws1mStream.listen((data) => _proc(CandleModel.fromWsJson(data), _c1m, _e1m));
-    _apiService.ws15mStream.listen((data) => _proc(CandleModel.fromWsJson(data), _c15m, _e15m));
+    _apiService.ws15mStream.listen((data) => _proc(CandleModel.fromWsJson(data), _candles, _engine));
   }
 
   void _proc(CandleModel tick, List<CandleModel> list, TradingEngine engine) {
@@ -708,10 +777,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       setState(() {});
   }
 
-  void _toggle(bool val) { setState(() { _isGlobalBotActive = val; _e1m.toggleBot(val); _e15m.toggleBot(val); }); }
+  void _toggle(bool val) { setState(() { _isBotActive = val; _engine.toggleBot(val); }); }
 
   @override
-  void dispose() { _apiService.disconnectWebSocket(); _tabController.dispose(); super.dispose(); }
+  void dispose() { _apiService.disconnectWebSocket(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
@@ -723,30 +792,29 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         ElevatedButton.icon(onPressed: _initApp, icon: const Icon(Icons.refresh), label: const Text('RETRY CONNECTION')),
       ]))));
     }
-    final engine = _tabController.index == 0 ? _e1m : _e15m;
     return Scaffold(
-      appBar: AppBar(title: const Text('Multi-TF Bot'), actions: [
-        IconButton(icon: const Icon(Icons.refresh), onPressed: () { _e1m.resetAccount(); _e15m.resetAccount(); }),
-        Switch(value: _isGlobalBotActive, onChanged: _toggle, activeColor: Colors.green),
+      appBar: AppBar(title: const Text('15m Crypto Bot'), actions: [
+        IconButton(icon: const Icon(Icons.refresh), onPressed: () { _engine.resetAccount(); }),
+        Switch(value: _isBotActive, onChanged: _toggle, activeColor: Colors.green),
       ]),
       body: Column(children: [
-        TabBar(controller: _tabController, tabs: const [Tab(text: "1 MINUTE"), Tab(text: "15 MINUTE")]),
         Container(padding: const EdgeInsets.all(16), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('CAPITAL', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-            Text('\$${engine.state.currentCapital.toStringAsFixed(2)}', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+            Text('\$${_engine.state.currentCapital.toStringAsFixed(2)}', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
           ]),
-          Text(engine.isBotActive ? engine.state.status.name.toUpperCase() : 'STOPPED', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: engine.isBotActive ? Colors.green : Colors.red)),
+          Text(_engine.isBotActive ? _engine.state.status.name.toUpperCase() : 'STOPPED', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _engine.isBotActive ? Colors.green : Colors.red)),
         ])),
-        if (engine.state.status != TradeStatus.none) Container(padding: const EdgeInsets.all(8), color: Colors.blue.shade50, child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
-          _level('SL', engine.state.activeSL ?? engine.state.setupSL, Colors.red),
-          _level('ENTRY', engine.state.activeEntry ?? (engine.state.setupEntryHigh != null ? 'Setup' : null), Colors.blue),
-          _level('TP', engine.state.activeTP ?? '1:2', Colors.green),
+        if (_engine.state.status != TradeStatus.none) Container(padding: const EdgeInsets.all(8), color: Colors.blue.shade50, child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+          _level('SL', _engine.state.activeSL ?? _engine.state.setupSL, Colors.red),
+          _level('ENTRY', _engine.state.activeEntry ?? (_engine.state.setupEntryHigh != null ? 'Setup' : null), Colors.blue),
+          _level('TP', _engine.state.activeTP ?? '1:2', Colors.green),
         ])),
-        Expanded(child: TabBarView(controller: _tabController, physics: const NeverScrollableScrollPhysics(), children: [
-          _l1m ? const Center(child: CircularProgressIndicator()) : ChartView(timeframe: '1m', candles: _c1m, tradeState: _e1m.state, liveBid: _liveBid, liveAsk: _liveAsk),
-          _l15m ? const Center(child: CircularProgressIndicator()) : ChartView(timeframe: '15m', candles: _c15m, tradeState: _e15m.state, liveBid: _liveBid, liveAsk: _liveAsk),
-        ])),
+        Expanded(
+          child: _isLoading 
+            ? const Center(child: CircularProgressIndicator()) 
+            : ChartView(timeframe: '15m', candles: _candles, tradeState: _engine.state, liveBid: _liveBid, liveAsk: _liveAsk),
+        ),
       ]),
     );
   }
@@ -754,7 +822,117 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 }
 
 // ==========================================
+// BACKGROUND SERVICE
+// ==========================================
+
+Future<void> initializeService() async {
+  final service = FlutterBackgroundService();
+
+  const AndroidNotificationChannel channel = AndroidNotificationChannel(
+    'crypto_bot_foreground',
+    'Crypto Bot Service',
+    description: 'This channel is used for the bot execution.',
+    importance: Importance.low,
+  );
+
+  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+
+  if (Platform.isAndroid) {
+    await flutterLocalNotificationsPlugin
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+  }
+
+  await service.configure(
+    androidConfiguration: AndroidConfiguration(
+      onStart: onStart,
+      autoStart: true,
+      isForegroundMode: true,
+      notificationChannelId: 'crypto_bot_foreground',
+      initialNotificationTitle: 'Crypto Bot Active',
+      initialNotificationContent: 'Monitoring 15m Timeframe...',
+      foregroundServiceNotificationId: 888,
+    ),
+    iosConfiguration: IosConfiguration(
+       autoStart: true,
+       onForeground: onStart,
+       onBackground: onIosBackground,
+    ),
+  );
+
+  service.startService();
+}
+
+@pragma('vm:entry-point')
+Future<bool> onIosBackground(ServiceInstance service) async => true;
+
+@pragma('vm:entry-point')
+void onStart(ServiceInstance service) async {
+  DartPluginRegistrant.ensureInitialized();
+
+  final BinanceService api = BinanceService();
+  final TradingEngine engine = TradingEngine(timeframe: '15m');
+  List<CandleModel> candles = [];
+  double? liveBid, liveAsk;
+
+  await engine.init();
+  api.connectWebSocket();
+
+  api.bookStream.listen((data) {
+    liveBid = double.tryParse(data['b'] ?? '');
+    liveAsk = double.tryParse(data['a'] ?? '');
+    if (liveBid != null && liveAsk != null && candles.isNotEmpty) {
+      final mid = (liveBid! + liveAsk!) / 2;
+      final last = candles.last;
+      candles[candles.length - 1] = CandleModel(
+        timestamp: last.timestamp,
+        open: last.open,
+        high: max(last.high, mid),
+        low: min(last.low, mid),
+        close: mid,
+        volume: last.volume,
+      );
+    }
+  });
+
+  api.ws15mStream.listen((data) {
+    final tick = CandleModel.fromWsJson(data);
+    if (candles.isNotEmpty) {
+      if (candles.last.timestamp == tick.timestamp) {
+        candles[candles.length - 1] = tick;
+      } else if (tick.timestamp > candles.last.timestamp) {
+        engine.processNewClose(candles.last);
+        candles.add(tick);
+        if (candles.length > 200) candles.removeAt(0);
+      }
+    } else {
+      candles.add(tick);
+    }
+    engine.processLiveTick(tick.close, liveBid, liveAsk, tick.timestamp);
+  });
+
+  service.on('stopService').listen((event) {
+    service.stopSelf();
+  });
+
+  Timer.periodic(const Duration(seconds: 10), (timer) async {
+    if (service is AndroidServiceInstance) {
+      if (await service.isForegroundService()) {
+        service.setForegroundNotificationInfo(
+          title: "Crypto Bot Active",
+          content: "Capital: \$${engine.state.currentCapital.toStringAsFixed(2)} | Status: ${engine.state.status.name.toUpperCase()}",
+        );
+      }
+    }
+  });
+}
+
+// ==========================================
 // MAIN ENTRY
 // ==========================================
 
-void main() => runApp(const MaterialApp(home: HomeScreen(), debugShowCheckedModeBanner: false));
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initializeService();
+  runApp(const MaterialApp(home: HomeScreen(), debugShowCheckedModeBanner: false));
+}
